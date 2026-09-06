@@ -1,0 +1,332 @@
+#include <errno.h>
+#include <signal.h>
+#include <stddef.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+
+#include "perf.h"
+#include "poop.h"
+#include "progress.h"
+#include "report.h"
+#include "stats.h"
+#include "term.h"
+
+static const char usage_text[] =
+    "Usage: poopc [options] <command1> ... <commandN>\n"
+    "\n"
+    "Compares the performance of the provided commands.\n"
+    "\n"
+    "Options:\n"
+    " -d, --duration <ms>    (default: 5000) how long to repeatedly sample each command\n"
+    " --color <when>         (default: auto) color output mode\n"
+    "                            available options: 'auto', 'never', 'ansi'\n"
+    " -f, --allow-failures   (default: false) compare performance if a non-zero exit code is returned\n";
+
+// Compute + print order; matches upstream's Command.Measurements field order.
+static const MeasurementDesc MEASUREMENT_DESCS[POOP_MEASUREMENT_COUNT] = {
+    {"wall_time", offsetof(Sample, wall_time), offsetof(Measurements, wall_time),
+     UNIT_NANOSECONDS, false},
+    {"peak_rss", offsetof(Sample, peak_rss), offsetof(Measurements, peak_rss),
+     UNIT_BYTES, false},
+    {"cpu_cycles", offsetof(Sample, cpu_cycles),
+     offsetof(Measurements, cpu_cycles), UNIT_COUNT, true},
+    {"instructions", offsetof(Sample, instructions),
+     offsetof(Measurements, instructions), UNIT_COUNT, true},
+    {"cache_references", offsetof(Sample, cache_references),
+     offsetof(Measurements, cache_references), UNIT_COUNT, true},
+    {"cache_misses", offsetof(Sample, cache_misses),
+     offsetof(Measurements, cache_misses), UNIT_COUNT, true},
+    {"branch_misses", offsetof(Sample, branch_misses),
+     offsetof(Measurements, branch_misses), UNIT_COUNT, true},
+};
+
+// Writes `count` U+2500 box-drawing dashes.
+static void box_dashes(FILE *f, int count) {
+    for (int i = 0; i < count; i++) fputs("\xe2\x94\x80", f);
+}
+
+// One framed line: <n dashes><label><n dashes>, or just dashes when label is NULL.
+static void box_line(FILE *f, int n, const char *label) {
+    box_dashes(f, n);
+    if (label) {
+        fputs(label, f);
+        box_dashes(f, n);
+    }
+    fputc('\n', f);
+}
+
+// Splits a command string on spaces (skipping runs of spaces), building a
+// NUL-terminated argv. No shell semantics, exactly like upstream.
+static void parse_cmd(Command *cmd, const char *s) {
+    size_t cap = 8;
+    size_t n = 0;
+    char **list = malloc(cap * sizeof(*list));
+
+    const char *p = s;
+    while (*p) {
+        while (*p == ' ') p++;
+        if (!*p) break;
+        const char *start = p;
+        while (*p && *p != ' ') p++;
+        size_t len = (size_t)(p - start);
+        if (n + 2 > cap) {
+            cap *= 2;
+            list = realloc(list, cap * sizeof(*list));
+        }
+        char *tok = malloc(len + 1);
+        memcpy(tok, start, len);
+        tok[len] = '\0';
+        list[n++] = tok;
+    }
+    list[n] = NULL;
+    cmd->argv = list;
+    cmd->argc = n;
+}
+
+static Measurement *measurement_ptr(Measurements *ms, size_t offset) {
+    return (Measurement *)((char *)ms + offset);
+}
+
+int main(int argc, char **argv) {
+    signal(SIGPIPE, SIG_IGN);
+
+    ColorMode color = COLOR_AUTO;
+    uint64_t max_nano_seconds = 5000ull * 1000000ull;
+    bool allow_failures = false;
+
+    Command *commands = calloc((size_t)(argc > 1 ? argc : 1), sizeof(Command));
+    size_t command_count = 0;
+
+    for (int i = 1; i < argc; i++) {
+        const char *arg = argv[i];
+        if (arg[0] != '-') {
+            Command c;
+            memset(&c, 0, sizeof(c));
+            c.raw_cmd = arg;
+            parse_cmd(&c, arg);
+            if (c.argc == 0) {
+                fprintf(stderr, "error: empty command\n");
+                return 1;
+            }
+            commands[command_count++] = c;
+        } else if (strcmp(arg, "-h") == 0 || strcmp(arg, "--help") == 0) {
+            fputs(usage_text, stdout);
+            fflush(stdout);
+            return 0;
+        } else if (strcmp(arg, "-d") == 0 || strcmp(arg, "--duration") == 0) {
+            i++;
+            if (i >= argc) {
+                fprintf(stderr,
+                        "'%s' requires a duration in milliseconds.\n%s", arg,
+                        usage_text);
+                return 1;
+            }
+            const char *next = argv[i];
+            errno = 0;
+            char *end = NULL;
+            unsigned long long ms = strtoull(next, &end, 10);
+            if (end == next || *end != '\0') {
+                fprintf(stderr,
+                        "unable to parse --duration argument '%s': %s\n", next,
+                        "InvalidCharacter");
+                return 1;
+            }
+            if (errno == ERANGE) {
+                fprintf(stderr,
+                        "unable to parse --duration argument '%s': %s\n", next,
+                        "Overflow");
+                return 1;
+            }
+            max_nano_seconds = 1000000ull * (uint64_t)ms;
+        } else if (strcmp(arg, "--color") == 0) {
+            i++;
+            if (i >= argc) {
+                fprintf(stderr,
+                        "'%s' requires a mode; options are 'auto', 'never', and "
+                        "'ansi'.\n%s",
+                        arg, usage_text);
+                return 1;
+            }
+            const char *next = argv[i];
+            if (strcmp(next, "auto") == 0) {
+                color = COLOR_AUTO;
+            } else if (strcmp(next, "never") == 0) {
+                color = COLOR_NEVER;
+            } else if (strcmp(next, "ansi") == 0) {
+                color = COLOR_ANSI;
+            } else {
+                fprintf(stderr,
+                        "unable to parse --color argument '%s'\n\navailable "
+                        "options are 'auto', 'never' and 'ansi'\n",
+                        next);
+                return 1;
+            }
+        } else if (strcmp(arg, "-f") == 0 ||
+                   strcmp(arg, "--allow-failures") == 0) {
+            allow_failures = true;
+        } else {
+            fprintf(stderr, "unrecognized argument: '%s'\n%s", arg, usage_text);
+            return 1;
+        }
+    }
+
+    if (command_count == 0) {
+        fputs(usage_text, stdout);
+        fflush(stdout);
+        return 1;
+    }
+
+    ProgressBar bar;
+    progress_init(&bar, STDOUT_FILENO);
+
+    Term term;
+    term.out = stdout;
+    switch (color) {
+        case COLOR_AUTO: {
+            const char *nc = getenv("NO_COLOR");
+            const char *cf = getenv("CLICOLOR_FORCE");
+            term.mode = term_detect_mode(STDOUT_FILENO, nc && nc[0] != '\0',
+                                         cf && cf[0] != '\0');
+            break;
+        }
+        case COLOR_NEVER:
+            term.mode = TERM_NO_COLOR;
+            break;
+        case COLOR_ANSI:
+            term.mode = TERM_ESCAPE_CODES;
+            break;
+    }
+
+    bool perf_available = true;
+    static Sample samples_buf[POOP_MAX_SAMPLES];
+
+    for (size_t cn = 0; cn < command_count; cn++) {
+        Command *command = &commands[cn];
+        size_t command_n = cn + 1;
+        memset(&command->measurements, 0, sizeof(command->measurements));
+
+        uint64_t first_start = now_ns();
+        size_t sample_index = 0;
+        while ((sample_index < POOP_MIN_SAMPLES ||
+                (now_ns() - first_start) < max_nano_seconds) &&
+               sample_index < POOP_MAX_SAMPLES) {
+            if (term.mode != TERM_NO_COLOR) progress_render(&bar);
+
+            PerfGroup pg;
+            bool have_perf = false;
+            if (perf_available) {
+                if (perf_group_open(&pg)) {
+                    have_perf = true;
+                    perf_group_reset(&pg);
+                } else {
+                    perf_available = false;
+                    fprintf(stderr,
+                            "warning: hardware performance counters unavailable "
+                            "(%s); reporting wall time and peak RSS only\n",
+                            strerror(errno));
+                }
+            }
+
+            uint64_t start = now_ns();
+            ChildResult cr;
+            if (spawn_and_wait(command->argv, &cr) != 0) {
+                if (have_perf) perf_group_close(&pg);
+                fprintf(stderr, "\nerror: Couldn't execute %s: %s\n",
+                        command->argv[0], strerror(errno));
+                return 1;
+            }
+            uint64_t duration = now_ns() - start;
+            if (have_perf) perf_group_disable(&pg);
+
+            if (cr.exited) {
+                if (cr.exit_code != 0 && !allow_failures) {
+                    if (term.mode != TERM_NO_COLOR) progress_clear(&bar);
+                    fprintf(stderr,
+                            "\nerror: Benchmark %zu command '%s' failed with "
+                            "exit code %d:\n",
+                            command_n, command->raw_cmd, cr.exit_code);
+                    if (cr.stderr_truncated) {
+                        box_line(stderr, 14, " truncated stderr ");
+                    } else {
+                        box_line(stderr, 19, " stderr ");
+                    }
+                    fprintf(stderr, "%s\n", cr.stderr_buf);
+                    box_line(stderr, 46, NULL);
+                    return 1;
+                }
+            } else {
+                fprintf(stderr, "error: terminated unexpectedly\n");
+                return 1;
+            }
+
+            Sample s;
+            memset(&s, 0, sizeof(s));
+            s.wall_time = duration;
+            s.peak_rss = cr.peak_rss;
+            if (have_perf) {
+                s.cpu_cycles = perf_read(pg.fds[0]);
+                s.instructions = perf_read(pg.fds[1]);
+                s.cache_references = perf_read(pg.fds[2]);
+                s.cache_misses = perf_read(pg.fds[3]);
+                s.branch_misses = perf_read(pg.fds[4]);
+            }
+            samples_buf[sample_index] = s;
+
+            if (have_perf) perf_group_close(&pg);
+            child_result_free(&cr);
+
+            if (term.mode != TERM_NO_COLOR) {
+                uint64_t cur_samples = (uint64_t)sample_index + 1;
+                uint64_t elapsed = now_ns() - first_start;
+                uint64_t ns_per_sample = elapsed / cur_samples;
+                if (ns_per_sample == 0) ns_per_sample = 1;
+                uint64_t estimate =
+                    (max_nano_seconds + ns_per_sample - 1) / ns_per_sample;
+                uint64_t est = cur_samples;
+                if (estimate > est) est = estimate;
+                if (POOP_MIN_SAMPLES > est) est = POOP_MIN_SAMPLES;
+                if (est > POOP_MAX_SAMPLES) est = POOP_MAX_SAMPLES;
+                bar.estimate = est;
+                bar.current += 1;
+            }
+
+            sample_index++;
+        }
+
+        if (term.mode != TERM_NO_COLOR) {
+            progress_clear(&bar);
+            bar.current = 0;
+            bar.estimate = 1;
+        }
+
+        size_t n = sample_index;
+        for (size_t d = 0; d < POOP_MEASUREMENT_COUNT; d++) {
+            const MeasurementDesc *desc = &MEASUREMENT_DESCS[d];
+            if (desc->is_perf && !perf_available) continue;
+            Measurement mm = measurement_compute(samples_buf, n,
+                                                 desc->sample_offset, desc->unit);
+            *measurement_ptr(&command->measurements, desc->measurement_offset) = mm;
+        }
+        command->sample_count = n;
+
+        report_command_header(&term, command, command_n, command_count);
+        for (size_t d = 0; d < POOP_MEASUREMENT_COUNT; d++) {
+            const MeasurementDesc *desc = &MEASUREMENT_DESCS[d];
+            if (desc->is_perf && !perf_available) continue;
+            Measurement *mm =
+                measurement_ptr(&command->measurements, desc->measurement_offset);
+            Measurement *first_mm =
+                (command_n == 1)
+                    ? NULL
+                    : measurement_ptr(&commands[0].measurements,
+                                      desc->measurement_offset);
+            report_measurement(&term, mm, desc->name, first_mm, command_count);
+        }
+        fflush(stdout);
+    }
+
+    fflush(stdout);
+    return 0;
+}

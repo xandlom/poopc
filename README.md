@@ -2,6 +2,13 @@
 
 Stop flushing your performance down the drain.
 
+`poopc` is a C23 port of [Andrew Kelley's `poop`](https://github.com/andrewrk/poop),
+built with the [`mate.h`](https://github.com/TomasBorquez/mate.h) build system.
+Output is intended to be byte-for-byte compatible with upstream. Unlike upstream,
+if hardware performance counters are unavailable (hardened kernel, containers,
+`perf_event_paranoid >= 3`) it degrades to reporting wall time and peak RSS
+instead of aborting.
+
 ## Overview
 
 This command line tool uses Linux's `perf_event_open` functionality to compare the performance of multiple commands
@@ -12,22 +19,31 @@ with a colorful terminal user interface.
 ## Usage
 
 ```
-Usage: poop [options] <command1> ... <commandN>
+Usage: poopc [options] <command1> ... <commandN>
 
 Compares the performance of the provided commands.
 
 Options:
- --duration <ms>    (default: 5000) how long to repeatedly sample each command
+ -d, --duration <ms>    (default: 5000) how long to repeatedly sample each command
+ --color <when>         (default: auto) color output mode
+                            available options: 'auto', 'never', 'ansi'
+ -f, --allow-failures   (default: false) compare performance if a non-zero exit code is returned
 
 ```
 
 ## Building from Source
 
-Tested with [Zig](https://ziglang.org/) `0.15.1`.
+Requires a C compiler with C23 support (GCC 11+ or Clang; built with `-std=c2x`)
+and a Linux target. The `mate.h` build system is vendored in this repo.
 
 ```
-zig build
+cc mate.c -o mate && ./mate
 ```
+
+The first run compiles the bundled Samurai and builds `mate` itself; afterwards
+`./mate` rebuilds only what changed. The `poopc` binary is written to
+`build/bin/<arch>-<os>-<compiler>/poopc`. `./mate` also builds and runs
+`render_test`, a golden-output regression check for the table renderer.
 
 ## Comparison with Hyperfine
 

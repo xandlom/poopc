@@ -1,2 +1,6 @@
-.zig-cache/
-/zig-out/
+/mate
+/mate.exe
+/mate-cache.ini
+/build/
+/.cache/
+/compile_commands.json
