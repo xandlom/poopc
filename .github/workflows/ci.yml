@@ -5,7 +5,7 @@ on:
     branches:
       - main
 jobs:
-  build:
+  linux:
     strategy:
       fail-fast: false
       matrix:
@@ -31,5 +31,50 @@ jobs:
       - name: Archive executable
         uses: actions/upload-artifact@v4
         with:
-          name: poopc-${{ matrix.cc }}
+          name: poopc-linux-${{ matrix.cc }}
           path: build/bin/*/poopc
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build + render_test
+        run: |
+          cc mate.c -o mate
+          ./mate
+
+      - name: Smoke test
+        run: |
+          BIN=$(find build/bin -name poopc -type f | head -1)
+          "$BIN" -h
+          "$BIN" --color never -d 300 'true' 'sleep 0.01'
+          # The Darwin backend must report cycles and instructions; anything else
+          # means proc_pid_rusage stopped handing out PMU-backed counts.
+          "$BIN" --color never -d 300 'true' | tee out.txt
+          grep -q cpu_cycles out.txt
+          grep -q instructions out.txt
+
+      - name: Archive executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: poopc-macos
+          path: build/bin/*/poopc
+
+  freebsd:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # hwpmc(4) is generally not loadable inside the CI VM, so this covers the
+      # build and the degraded wall-time/peak-RSS path, not the counters.
+      - name: Build + render_test + smoke test
+        uses: vmactions/freebsd-vm@v1
+        with:
+          usesh: true
+          run: |
+            cc mate.c -o mate
+            ./mate
+            BIN=$(find build/bin -name poopc -type f | head -1)
+            "$BIN" -h
+            "$BIN" --color never -d 300 'true' 'sleep 0.01'

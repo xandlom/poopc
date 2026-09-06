@@ -6,7 +6,8 @@
 #include <string.h>
 #include <unistd.h>
 
-#include "perf.h"
+#include "child.h"
+#include "counters.h"
 #include "poop.h"
 #include "progress.h"
 #include "report.h"
@@ -27,20 +28,26 @@ static const char usage_text[] =
 // Compute + print order; matches upstream's Command.Measurements field order.
 static const MeasurementDesc MEASUREMENT_DESCS[POOP_MEASUREMENT_COUNT] = {
     {"wall_time", offsetof(Sample, wall_time), offsetof(Measurements, wall_time),
-     UNIT_NANOSECONDS, false},
+     UNIT_NANOSECONDS, COUNTER_NONE},
     {"peak_rss", offsetof(Sample, peak_rss), offsetof(Measurements, peak_rss),
-     UNIT_BYTES, false},
+     UNIT_BYTES, COUNTER_NONE},
     {"cpu_cycles", offsetof(Sample, cpu_cycles),
-     offsetof(Measurements, cpu_cycles), UNIT_COUNT, true},
+     offsetof(Measurements, cpu_cycles), UNIT_COUNT, COUNTER_CPU_CYCLES},
     {"instructions", offsetof(Sample, instructions),
-     offsetof(Measurements, instructions), UNIT_COUNT, true},
+     offsetof(Measurements, instructions), UNIT_COUNT, COUNTER_INSTRUCTIONS},
     {"cache_references", offsetof(Sample, cache_references),
-     offsetof(Measurements, cache_references), UNIT_COUNT, true},
+     offsetof(Measurements, cache_references), UNIT_COUNT, COUNTER_CACHE_REFERENCES},
     {"cache_misses", offsetof(Sample, cache_misses),
-     offsetof(Measurements, cache_misses), UNIT_COUNT, true},
+     offsetof(Measurements, cache_misses), UNIT_COUNT, COUNTER_CACHE_MISSES},
     {"branch_misses", offsetof(Sample, branch_misses),
-     offsetof(Measurements, branch_misses), UNIT_COUNT, true},
+     offsetof(Measurements, branch_misses), UNIT_COUNT, COUNTER_BRANCH_MISSES},
 };
+
+// True when this row can be filled in on this machine. Wall time and peak RSS
+// always can; a hardware counter only if the backend populates it.
+static bool desc_supported(const MeasurementDesc *d, const CounterSupport *s) {
+    return d->counter == COUNTER_NONE || s->v[d->counter];
+}
 
 // Writes `count` U+2500 box-drawing dashes.
 static void box_dashes(FILE *f, int count) {
@@ -87,6 +94,10 @@ static void parse_cmd(Command *cmd, const char *s) {
 
 static Measurement *measurement_ptr(Measurements *ms, size_t offset) {
     return (Measurement *)((char *)ms + offset);
+}
+
+static uint64_t *sample_ptr(Sample *s, size_t offset) {
+    return (uint64_t *)((char *)s + offset);
 }
 
 int main(int argc, char **argv) {
@@ -199,7 +210,21 @@ int main(int argc, char **argv) {
             break;
     }
 
-    bool perf_available = true;
+    Counters *counters = counters_open();
+    if (!counters) {
+        fprintf(stderr, "error: out of memory\n");
+        return 1;
+    }
+    // Warn once if the report will be missing every hardware counter, either
+    // because this platform has no backend or because the kernel refused.
+    bool warned_no_counters = !counters_any_supported(counters);
+    if (warned_no_counters) {
+        fprintf(stderr,
+                "warning: hardware performance counters unavailable (%s); "
+                "reporting wall time and peak RSS only\n",
+                counters_unavailable_reason(counters));
+    }
+
     static Sample samples_buf[POOP_MAX_SAMPLES];
 
     for (size_t cn = 0; cn < command_count; cn++) {
@@ -214,31 +239,22 @@ int main(int argc, char **argv) {
                sample_index < POOP_MAX_SAMPLES) {
             if (term.mode != TERM_NO_COLOR) progress_render(&bar);
 
-            PerfGroup pg;
-            bool have_perf = false;
-            if (perf_available) {
-                if (perf_group_open(&pg)) {
-                    have_perf = true;
-                    perf_group_reset(&pg);
-                } else {
-                    perf_available = false;
-                    fprintf(stderr,
-                            "warning: hardware performance counters unavailable "
-                            "(%s); reporting wall time and peak RSS only\n",
-                            strerror(errno));
-                }
-            }
-
-            uint64_t start = now_ns();
             ChildResult cr;
-            if (spawn_and_wait(command->argv, &cr) != 0) {
-                if (have_perf) perf_group_close(&pg);
+            if (child_run(command->argv, counters, &cr) != 0) {
+                if (term.mode != TERM_NO_COLOR) progress_clear(&bar);
                 fprintf(stderr, "\nerror: Couldn't execute %s: %s\n",
                         command->argv[0], strerror(errno));
                 return 1;
             }
-            uint64_t duration = now_ns() - start;
-            if (have_perf) perf_group_disable(&pg);
+
+            if (!warned_no_counters && !counters_any_supported(counters)) {
+                warned_no_counters = true;
+                if (term.mode != TERM_NO_COLOR) progress_clear(&bar);
+                fprintf(stderr,
+                        "warning: hardware performance counters unavailable "
+                        "(%s); reporting wall time and peak RSS only\n",
+                        counters_unavailable_reason(counters));
+            }
 
             if (cr.exited) {
                 if (cr.exit_code != 0 && !allow_failures) {
@@ -263,18 +279,15 @@ int main(int argc, char **argv) {
 
             Sample s;
             memset(&s, 0, sizeof(s));
-            s.wall_time = duration;
+            s.wall_time = cr.wall_time;
             s.peak_rss = cr.peak_rss;
-            if (have_perf) {
-                s.cpu_cycles = perf_read(pg.fds[0]);
-                s.instructions = perf_read(pg.fds[1]);
-                s.cache_references = perf_read(pg.fds[2]);
-                s.cache_misses = perf_read(pg.fds[3]);
-                s.branch_misses = perf_read(pg.fds[4]);
+            for (size_t d = 0; d < POOP_MEASUREMENT_COUNT; d++) {
+                const MeasurementDesc *desc = &MEASUREMENT_DESCS[d];
+                if (desc->counter != COUNTER_NONE)
+                    *sample_ptr(&s, desc->sample_offset) = cr.counters.v[desc->counter];
             }
             samples_buf[sample_index] = s;
 
-            if (have_perf) perf_group_close(&pg);
             child_result_free(&cr);
 
             if (term.mode != TERM_NO_COLOR) {
@@ -301,10 +314,11 @@ int main(int argc, char **argv) {
             bar.estimate = 1;
         }
 
+        const CounterSupport *support = counters_support(counters);
         size_t n = sample_index;
         for (size_t d = 0; d < POOP_MEASUREMENT_COUNT; d++) {
             const MeasurementDesc *desc = &MEASUREMENT_DESCS[d];
-            if (desc->is_perf && !perf_available) continue;
+            if (!desc_supported(desc, support)) continue;
             Measurement mm = measurement_compute(samples_buf, n,
                                                  desc->sample_offset, desc->unit);
             *measurement_ptr(&command->measurements, desc->measurement_offset) = mm;
@@ -314,7 +328,7 @@ int main(int argc, char **argv) {
         report_command_header(&term, command, command_n, command_count);
         for (size_t d = 0; d < POOP_MEASUREMENT_COUNT; d++) {
             const MeasurementDesc *desc = &MEASUREMENT_DESCS[d];
-            if (desc->is_perf && !perf_available) continue;
+            if (!desc_supported(desc, support)) continue;
             Measurement *mm =
                 measurement_ptr(&command->measurements, desc->measurement_offset);
             Measurement *first_mm =
@@ -327,6 +341,7 @@ int main(int argc, char **argv) {
         fflush(stdout);
     }
 
+    counters_close(counters);
     fflush(stdout);
     return 0;
 }

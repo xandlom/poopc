@@ -1,5 +1,6 @@
 // poopc - Performance Optimizer Observation Platform, C port of Andrew Kelley's
-// `poop` (https://github.com/andrewrk/poop). Linux only.
+// `poop` (https://github.com/andrewrk/poop). Runs on Linux, macOS and FreeBSD;
+// see src/counters.h for how the hardware counters are obtained on each.
 #pragma once
 
 #include <stdbool.h>
@@ -9,7 +10,7 @@
 
 #define POOP_MAX_SAMPLES 10000
 #define POOP_MIN_SAMPLES 3
-#define POOP_PERF_COUNT 5
+#define POOP_COUNTER_COUNT 5
 
 // Unit of a measured quantity, controls how values are rendered.
 typedef enum {
@@ -74,7 +75,7 @@ typedef struct {
     size_t sample_offset;      // offsetof(Sample, <field>)
     size_t measurement_offset; // offsetof(Measurements, <field>)
     Unit unit;
-    bool is_perf; // requires hardware performance counters
+    int counter; // CounterId of the backing counter, or COUNTER_NONE
 } MeasurementDesc;
 
 #define POOP_MEASUREMENT_COUNT 7

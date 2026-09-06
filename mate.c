@@ -6,6 +6,17 @@
 int main(void) {
   Target t = HostTarget();
 
+  // Hardware counters come from a per-OS backend implementing src/counters.h.
+  // Anything without one still builds, reporting wall time and peak RSS only.
+  char *counters_backend = "./src/counters/unsupported.c";
+  if (isLinux(t))        counters_backend = "./src/counters/linux.c";
+  else if (isMacOS(t))   counters_backend = "./src/counters/darwin.c";
+  else if (isFreeBSD(t)) counters_backend = "./src/counters/freebsd.c";
+
+  // _GNU_SOURCE is what Linux needs for perf_event_open's syscall plumbing;
+  // Darwin and FreeBSD expose everything used here by default.
+  char *flags = isLinux(t) ? "-D_GNU_SOURCE" : "";
+
   StartBuild();
   {
     Executable exe = CreateExecutable((ExecutableOptions){
@@ -13,18 +24,23 @@ int main(void) {
         .warnings = FLAG_WARNINGS,         // -Wall -Wextra
         .optimization = FLAG_OPTIMIZATION, // -O2
         .std = FLAG_STD_C2X,               // portable C23 subset: gcc 11+ and clang
-        .flags = "-D_GNU_SOURCE",
+        .flags = flags,
     });
 
     AddFile(exe, "./src/poop.c");
-    AddFile(exe, "./src/perf.c");
+    AddFile(exe, "./src/child.c");
+    AddFile(exe, counters_backend);
     AddFile(exe, "./src/stats.c");
     AddFile(exe, "./src/term.c");
     AddFile(exe, "./src/progress.c");
     AddFile(exe, "./src/report.c");
 
-    if (isLinux(t)) {
-      LinkSystemLibraries(exe, "m"); // sqrt() from <math.h>
+    // Darwin folds libm into libSystem; the others need it for sqrt().
+    if (!isMacOS(t)) {
+      LinkSystemLibraries(exe, "m");
+    }
+    if (isFreeBSD(t)) {
+      LinkSystemLibraries(exe, "pmc"); // hwpmc(4) counters
     }
 
     InstallExecutable(exe);
@@ -37,14 +53,14 @@ int main(void) {
         .output = "render_test",
         .warnings = FLAG_WARNINGS,
         .std = FLAG_STD_C2X,
-        .flags = "-D_GNU_SOURCE",
+        .flags = flags,
         .includes = "-I./src",
     });
     AddFile(render_test, "./tests/render_test.c");
     AddFile(render_test, "./src/report.c");
     AddFile(render_test, "./src/term.c");
     AddFile(render_test, "./src/stats.c");
-    if (isLinux(t)) {
+    if (!isMacOS(t)) {
       LinkSystemLibraries(render_test, "m");
     }
     InstallExecutable(render_test);
