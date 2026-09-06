@@ -19,7 +19,7 @@ with a colorful terminal user interface.
 ## Usage
 
 ```
-Usage: poop [options] <command1> ... <commandN>
+Usage: poopc [options] <command1> ... <commandN>
 
 Compares the performance of the provided commands.
 
@@ -41,8 +41,8 @@ cc mate.c -o mate && ./mate
 ```
 
 The first run compiles the bundled Samurai and builds `mate` itself; afterwards
-`./mate` rebuilds only what changed. The `poop` binary is written to
-`build/bin/<arch>-<os>-<compiler>/poop`. `./mate` also builds and runs
+`./mate` rebuilds only what changed. The `poopc` binary is written to
+`build/bin/<arch>-<os>-<compiler>/poopc`. `./mate` also builds and runs
 `render_test`, a golden-output regression check for the table renderer.
 
 ## Comparison with Hyperfine

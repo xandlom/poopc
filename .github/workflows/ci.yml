@@ -24,12 +24,12 @@ jobs:
       - name: Smoke test
         run: |
           sudo sysctl -w kernel.perf_event_paranoid=1 || true
-          BIN=$(find build/bin -name poop -type f | head -1)
+          BIN=$(find build/bin -name poopc -type f | head -1)
           "$BIN" -h
           "$BIN" --color never -d 300 'true' 'sleep 0.01'
 
       - name: Archive executable
         uses: actions/upload-artifact@v4
         with:
-          name: poop-${{ matrix.cc }}
-          path: build/bin/*/poop
+          name: poopc-${{ matrix.cc }}
+          path: build/bin/*/poopc

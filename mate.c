@@ -9,7 +9,7 @@ int main(void) {
   StartBuild();
   {
     Executable exe = CreateExecutable((ExecutableOptions){
-        .output = "poop",
+        .output = "poopc",
         .warnings = FLAG_WARNINGS,         // -Wall -Wextra
         .optimization = FLAG_OPTIMIZATION, // -O2
         .std = FLAG_STD_C2X,               // portable C23 subset: gcc 11+ and clang

@@ -14,7 +14,7 @@
 #include "term.h"
 
 static const char usage_text[] =
-    "Usage: poop [options] <command1> ... <commandN>\n"
+    "Usage: poopc [options] <command1> ... <commandN>\n"
     "\n"
     "Compares the performance of the provided commands.\n"
     "\n"
