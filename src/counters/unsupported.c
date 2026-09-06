@@ -28,6 +28,11 @@ const char *counters_unavailable_reason(const Counters *c) {
     return "no counter backend for this platform";
 }
 
+void counters_disable(Counters *c, const char *why) {
+    (void)c;
+    (void)why; // nothing was ever enabled
+}
+
 void counters_prepare(Counters *c) { (void)c; }
 void counters_child_spawned(Counters *c, pid_t pid) {
     (void)c;

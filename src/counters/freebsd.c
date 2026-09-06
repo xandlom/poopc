@@ -9,6 +9,22 @@
 // security.bsd.unprivileged_proc_debug left at its default so a user can attach
 // a PMC to a process they own.
 //
+// There is a race here that cannot be closed from userland. A process-scope PMC
+// is harvested into its saved value as the target is torn down, and that is not
+// ordered against the parent waking from waitid(). Lose it and pmc_read returns
+// success with a value of zero, which would otherwise look like a command that
+// executed no instructions. Measured on a Cortex-A72: the window shrinks the
+// more work the parent does between the child's exit and the read (99% of reads
+// lost with none, 12% with one blocking pipe read, and about 1 in 850 in poopc
+// proper), but it never closes. Nor can a lost count be recovered afterwards:
+// re-reading 100k times, sleeping and retrying, and pmc_detach before the read
+// were all tried, and pmc_detach on an exited target simply fails.
+//
+// So the sample is failed instead. A process that got as far as exec always
+// retires instructions and burns cycles, which makes a zero there a reliable
+// witness that the harvest was missed, and the run is marked `lost` for the
+// caller to discard.
+//
 // Which events exist depends entirely on the CPU. libpmc exposes portable
 // aliases for some of them ("instructions", "unhalted-cycles",
 // "branch-mispredicts") but not for all, and the cache events in particular are
@@ -129,6 +145,11 @@ const char *counters_unavailable_reason(const Counters *c) {
     return counters_any_supported(c) ? NULL : c->reason;
 }
 
+void counters_disable(Counters *c, const char *why) {
+    release_all(c);
+    drop_all(c, why);
+}
+
 void counters_prepare(Counters *c) {
     c->pid = -1;
     memset(&c->readings, 0, sizeof(c->readings));
@@ -167,10 +188,21 @@ void counters_before_reap(Counters *c) {
     for (int i = 0; i < POOP_COUNTER_COUNT; i++) {
         if (!c->started[i]) continue;
         pmc_value_t value = 0;
-        if (pmc_read(c->id[i], &value) == 0) c->readings.v[i] = (uint64_t)value;
+        if (pmc_read(c->id[i], &value) < 0)
+            c->readings.lost = true;
+        else
+            c->readings.v[i] = (uint64_t)value;
         pmc_stop(c->id[i]);
         c->started[i] = false;
     }
+
+    // A zero here is the harvest race, not a free command. Only cycles and
+    // instructions are usable as witnesses: a short run really can take zero
+    // cache misses or branch misses. A CPU that offers neither witness gets the
+    // reading as-is, since there is then nothing to check it against.
+    if ((c->support.v[COUNTER_CPU_CYCLES] && c->readings.v[COUNTER_CPU_CYCLES] == 0) ||
+        (c->support.v[COUNTER_INSTRUCTIONS] && c->readings.v[COUNTER_INSTRUCTIONS] == 0))
+        c->readings.lost = true;
 }
 
 CounterReadings counters_after_reap(Counters *c) {

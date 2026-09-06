@@ -225,6 +225,8 @@ int main(int argc, char **argv) {
                 counters_unavailable_reason(counters));
     }
 
+    size_t lost_samples = 0;
+
     static Sample samples_buf[POOP_MAX_SAMPLES];
 
     for (size_t cn = 0; cn < command_count; cn++) {
@@ -275,6 +277,24 @@ int main(int argc, char **argv) {
             } else {
                 fprintf(stderr, "error: terminated unexpectedly\n");
                 return 1;
+            }
+
+            // The platform could not hand over this run's counts, so there is
+            // no sample here to keep -- recording it would mean zeros in the
+            // table, which drag the minimum down and inflate the deviation.
+            // Drop it and run the command again.
+            if (cr.counters.lost) {
+                child_result_free(&cr);
+                if (++lost_samples <= POOP_MAX_LOST_SAMPLES) continue;
+                if (term.mode != TERM_NO_COLOR) progress_clear(&bar);
+                fprintf(stderr,
+                        "warning: hardware performance counters kept losing "
+                        "counts (%zu runs discarded); reporting wall time and "
+                        "peak RSS only\n",
+                        lost_samples);
+                counters_disable(counters, "counts repeatedly lost");
+                warned_no_counters = true; // this message replaces the generic one
+                continue;
             }
 
             Sample s;

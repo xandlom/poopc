@@ -84,10 +84,15 @@ static bool group_open(Counters *c) {
     return true;
 }
 
-static uint64_t read_fd(int fd) {
+// Reads one u64 counter. A short read means the value never arrived, which is
+// reported through *ok rather than passed off as a zero count.
+static uint64_t read_fd(int fd, bool *ok) {
     uint64_t v = 0;
     ssize_t n = read(fd, &v, sizeof(v));
-    if (n != (ssize_t)sizeof(v)) return 0;
+    if (n != (ssize_t)sizeof(v)) {
+        *ok = false;
+        return 0;
+    }
     return v;
 }
 
@@ -132,6 +137,12 @@ const char *counters_unavailable_reason(const Counters *c) {
     return counters_any_supported(c) ? NULL : c->reason;
 }
 
+void counters_disable(Counters *c, const char *why) {
+    group_close(c);
+    memset(&c->support, 0, sizeof(c->support));
+    snprintf(c->reason, sizeof(c->reason), "%s", why);
+}
+
 void counters_prepare(Counters *c) {
     if (!counters_any_supported(c)) return;
     if (!group_open(c)) {
@@ -157,8 +168,10 @@ CounterReadings counters_after_reap(Counters *c) {
     if (!c->open) return r;
 
     ioctl(c->fds[0], PERF_EVENT_IOC_DISABLE, PERF_IOC_FLAG_GROUP);
+    bool ok = true;
     for (int i = 0; i < POOP_COUNTER_COUNT; i++)
-        if (c->support.v[i]) r.v[i] = read_fd(c->fds[i]);
+        if (c->support.v[i]) r.v[i] = read_fd(c->fds[i], &ok);
+    r.lost = !ok;
     group_close(c);
     return r;
 }

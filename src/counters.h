@@ -43,8 +43,15 @@ typedef enum {
 } CounterId;
 
 // Counter values for a single run. Entries the backend does not support stay 0.
+//
+// `lost` says the platform failed to hand over this run's counts, so the sample
+// is unusable and the caller must throw it away rather than record zeros; see
+// the harvest race described in src/counters/freebsd.c for the case that
+// motivates it. The sense is negative so that a zero-initialised CounterReadings
+// means "fine", which is what a backend with nothing to report wants.
 typedef struct {
     uint64_t v[POOP_COUNTER_COUNT];
+    bool lost;
 } CounterReadings;
 
 // Which entries the backend actually populates. Unsupported counters are omitted
@@ -73,9 +80,15 @@ bool counters_any_supported(const Counters *c);
 // one is still supported. Valid until the next call on `c`.
 const char *counters_unavailable_reason(const Counters *c);
 
+// Turns every counter off for the rest of the process, so the report degrades to
+// wall time and peak RSS. For the caller to use when a backend is technically
+// working but not producing usable numbers.
+void counters_disable(Counters *c, const char *why);
+
 // Per-run hooks; see the sequence at the top of this file. They do not report
 // failure: a backend that loses its counters clears the matching support flags
-// and leaves the readings zeroed, which drops those rows from the report.
+// and leaves the readings zeroed, which drops those rows from the report. A
+// backend that loses just one run's counts sets `lost` on the readings instead.
 // counters_before_reap() is called with the child exited but not yet reaped.
 void counters_prepare(Counters *c);
 void counters_child_spawned(Counters *c, pid_t pid);

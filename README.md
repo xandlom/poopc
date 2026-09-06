@@ -65,10 +65,18 @@ Cortex-A72 (Raspberry Pi 4) under FreeBSD 15.0-RELEASE. Requires the `hwpmc(4)` 
 (`kldload hwpmc`, or `hwpmc_load="YES"` in `/boot/loader.conf`); without it, poopc falls back to wall
 time and peak RSS.
 
-One caveat that is not poopc's doing: FreeBSD's `ru_maxrss` is unreliable for very short-lived
-processes, so `peak_rss` for a command like `true` swings between 0 and its real value. Base's own
+Two caveats, neither of them poopc's doing. FreeBSD's `ru_maxrss` is unreliable for very short-lived
+processes, so `peak_rss` for a command like `true` swings between 0 and its real value; base's own
 `/usr/bin/time -l` shows the same, so poopc reports the kernel's number as-is rather than papering
 over it.
+
+The second is a race in how hwpmc hands a process-scope counter back once its target exits, which is
+not ordered against the parent waking up. When poopc loses it, `pmc_read` returns success with a
+count of zero — and a lost count cannot be recovered afterwards. So poopc discards those runs instead
+of recording them: a zero cycle or instruction count is impossible for a command that actually ran,
+which makes it a reliable signal. Roughly one run in eight hundred is dropped this way, which only
+means a slightly lower run count for the same wall time. If it happens constantly, poopc says so and
+finishes on wall time and peak RSS.
 
 Other platforms build and run, reporting wall time and peak RSS only.
 

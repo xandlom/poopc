@@ -85,6 +85,8 @@ const char *counters_unavailable_reason(const Counters *c) {
     return counters_any_supported(c) ? NULL : c->reason;
 }
 
+void counters_disable(Counters *c, const char *why) { drop_support(c, why); }
+
 void counters_prepare(Counters *c) {
     c->pid = -1;
     memset(&c->readings, 0, sizeof(c->readings));

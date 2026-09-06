@@ -10,6 +10,12 @@
 
 #define POOP_MAX_SAMPLES 10000
 #define POOP_MIN_SAMPLES 3
+
+// How many runs whose counts the platform lost we throw away before concluding
+// the counters are not worth having and finishing on wall time and peak RSS.
+// Occasional losses are expected on FreeBSD (see src/counters/freebsd.c); this
+// only has to stop a machine that loses every one from sampling forever.
+#define POOP_MAX_LOST_SAMPLES 100
 #define POOP_COUNTER_COUNT 5
 
 // Unit of a measured quantity, controls how values are rendered.
