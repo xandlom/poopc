@@ -2,6 +2,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <signal.h> // siginfo_t; sys/wait.h alone does not declare it on FreeBSD
 #include <stdlib.h>
 #include <string.h>
 #include <sys/resource.h>

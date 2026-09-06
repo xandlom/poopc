@@ -67,7 +67,9 @@ jobs:
       - uses: actions/checkout@v4
 
       # hwpmc(4) is generally not loadable inside the CI VM, so this covers the
-      # build and the degraded wall-time/peak-RSS path, not the counters.
+      # build and the degraded wall-time/peak-RSS path, not the counters. The
+      # counters themselves were verified by hand on a Cortex-A72 running
+      # FreeBSD 15.0-RELEASE; see the Platform Support table in the README.
       - name: Build + render_test + smoke test
         uses: vmactions/freebsd-vm@v1
         with:

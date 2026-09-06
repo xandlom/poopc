@@ -31,22 +31,28 @@
 #endif
 
 // Candidate event specs per counter, most portable first, NULL-terminated.
+// libpmc's portable aliases ("instructions", "unhalted-cycles",
+// "branch-mispredicts", "cache-references") cover only some CPUs, so each list
+// falls back to the raw event names the x86 and ARMv8 PMU classes use. Matching
+// is case-insensitive. Where a counter has no single obvious equivalent, the
+// candidates follow the same mapping Linux's own perf events use on that
+// architecture, so a poopc run means the same thing on both.
+//
 // "cycles" is deliberately last: on several Intel parts libpmc aliases it to the
 // TSC, which is a system-scope-only PMC and so fails to allocate here, leaving
 // the real alias "unhalted-cycles" to win.
-static const char *const event_candidates[POOP_COUNTER_COUNT][5] = {
+static const char *const event_candidates[POOP_COUNTER_COUNT][6] = {
     [COUNTER_CPU_CYCLES] = {"unhalted-cycles", "cpu_clk_unhalted.thread_p",
                             "cpu_cycles", "cycles", NULL},
     [COUNTER_INSTRUCTIONS] = {"instructions", "inst_retired.any_p",
-                              "instr_executed", NULL},
+                              "inst_retired", "instr_executed", NULL},
     [COUNTER_CACHE_REFERENCES] = {"cache-references", "longest_lat_cache.reference",
-                                  "llc-reference", NULL},
+                                  "llc-reference", "l1d_cache", "mem_access", NULL},
     [COUNTER_CACHE_MISSES] = {"cache-misses", "longest_lat_cache.miss",
-                              "llc-misses", NULL},
+                              "llc-misses", "dc-misses", "l1d_cache_refill", NULL},
     [COUNTER_BRANCH_MISSES] = {"branch-mispredicts", "br_misp_retired.all_branches",
-                               "branch_mispred", NULL},
+                               "br_mis_pred", "branch_mispred", NULL},
 };
-
 struct Counters {
     const char *event[POOP_COUNTER_COUNT]; // the candidate that won the probe
     pmc_id_t id[POOP_COUNTER_COUNT];

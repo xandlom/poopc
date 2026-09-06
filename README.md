@@ -56,11 +56,19 @@ and counts per-core rather than per-process, so they are left out. Note also tha
 include kernel time spent on the process's behalf, whereas the Linux backend sets `exclude_kernel`;
 numbers are comparable between commands measured on one machine, but not across platforms.
 
-On **FreeBSD** all five are available in principle, hence ☑️ rather than ✅: which ones you actually
-get depends on the CPU and on how many programmable PMC slots it has. The backend probes a list of
-candidate event names per counter at startup and keeps whichever the hardware accepts. It needs the
-`hwpmc(4)` module loaded (`kldload hwpmc`, or `hwpmc_load="YES"` in `/boot/loader.conf`); without it,
-poopc falls back to wall time and peak RSS.
+On **FreeBSD** all five are ☑️ rather than ✅ because which ones you get depends on the CPU: libpmc's
+portable event aliases cover only some parts, event names differ between the x86 and ARMv8 PMU
+classes, and a CPU may have fewer programmable slots than the five counters poopc wants. The backend
+probes a list of candidate event names per counter at startup and keeps whichever the hardware
+accepts, so a counter is either right or absent, never wrong. All five have been verified on a
+Cortex-A72 (Raspberry Pi 4) under FreeBSD 15.0-RELEASE. Requires the `hwpmc(4)` module
+(`kldload hwpmc`, or `hwpmc_load="YES"` in `/boot/loader.conf`); without it, poopc falls back to wall
+time and peak RSS.
+
+One caveat that is not poopc's doing: FreeBSD's `ru_maxrss` is unreliable for very short-lived
+processes, so `peak_rss` for a command like `true` swings between 0 and its real value. Base's own
+`/usr/bin/time -l` shows the same, so poopc reports the kernel's number as-is rather than papering
+over it.
 
 Other platforms build and run, reporting wall time and peak RSS only.
 
